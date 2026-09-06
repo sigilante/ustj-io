@@ -14,8 +14,8 @@
 \fancyhead{}
 \fancyfoot[L]{{\footnotesize
               %% We toggle between these:
-              Manuscript submitted for review.\\
-              % {\it Urbit Systems Technical Journal} I:1 (2024):  1–3. \\
+              % Manuscript submitted for review.\\
+              {\it Urbit Systems Technical Journal} III:2 (2026):  45–58. \\
               ~ \\
               Address author correspondence to \authorpatp.
               }}
@@ -41,7 +41,7 @@
 
 % We will adjust page numbering in final editing.
 \pagenumbering{arabic}
-\setcounter{page}{1}
+\setcounter{page}{45}
 
 \tableofcontents
 
@@ -281,15 +281,15 @@ Agents are:
   if ever taken.
 \end{itemize}
 
-Threads are:
+Arvo's threads are:
 
 \begin{itemize}
 \item
   Not upgradable in-place. Since the state is implicit, you can only
-  cleanly upgrade by (1) killing the thread and restarting it or (2)
+  cleanly upgrade by killing the thread and restarting it, or
   letting it resolve to a defined ``upgradable state'' periodically,
-  usually at the top of a ``main loop''. If you do (2), then you are in
-  fact structuring it as a state machine, so the other advantages of
+  usually at the top of a ``main loop''. In the latter case, then you are in
+  fact structuring it as a state machine, so other advantages of
   threads are compromised.
 \item
   Fragile. If we don't receive expected input, the default behavior is
@@ -301,8 +301,7 @@ Threads are:
   case of unexpected input, a thread can't be expected to last forever.
   It must be ``rebooted'' from time to time.
 \item
-  Easy to write long sequences of I/O. Just\ldots write the I/O one line
-  at a time.
+  Easy to write long sequences of I/O.
 \end{itemize}
 
 Arvo proper and the vanes are permanent pieces of software and, for this
@@ -318,9 +317,9 @@ doesn't need to be upgradable, it's worth it for the robustness and
 concurrency advantages.
 
 However, Arvo is a single-level store -- all of its state is permanent.
-This is very convenient and eliminates many long-tail bugs, but it also
+This is convenient and eliminates many long-tail bugs, but it also
 means we need to code for permanence, and that's much easier when you
-structure your code with explicit state.
+structure code with explicit state.
 
 Further, Arvo and the vanes rarely perform long sequences of I/O.
 Generally, they do one thing and emit some effects, similar to the \textsc{http}
@@ -329,16 +328,19 @@ example, the Eyre vane passes \textsc{http} requests to userspace agents or
 threads. In this case, there is a sequence of I/O, which in monadic code
 would be:
 
+\begin{lstlisting}[style=listingblock]
 loop()
-
 where:
+  loop = request ← receiveRequest()
+  agent = lookupAgent(request)
+  response ← callAgent(agent, request)
+  _ ← sendResponse(request, response)
+  loop()
+\end{lstlisting}
 
-loop = request \texttt{←} receiveRequest() agent = lookupAgent(request)
-response \texttt{←} callAgent(agent, request) \_ \texttt{←}
-sendResponse(request, response) loop()
-
+\noindent
 This is clear code to read, but it leaves open the question of how to
-respond during the callAgent() function. If another request comes in,
+respond during the \texttt{callAgent()} function. If another request comes in,
 can we handle it in parallel? If we need to upgrade ourselves before the
 agent responds, can we make sure to properly handle the response?
 
@@ -350,17 +352,26 @@ machine''.
 
 In a state machine, the naive solution is:
 
-state :: (map request agent) main(state, event) \{ switch event \{
-\textsc{http}Request request -\textgreater{} agent = lookupAgent(request)
-{[}put(state, request, agent), CallAgent agent request{]} AgentResponse
-request response -\textgreater{} {[}del(state, request), \textsc{http}Respond
-request response{]} \} \}
+\begin{lstlisting}[style=listingblock]
+state :: (map request agent)
+main(state, event) {
+  switch event {
+    HTTPRequest request →
+      agent = lookupAgent(request)
+      [put(state, request, agent),
+       CallAgent agent request]
+    AgentResponse request response →
+      [del(state, request),
+       HTTPRespond request response]
+  }
+}
+\end{lstlisting}
 
 Upgrading this is trivial, since the state (map of requests to
 outstanding calls to agents) is explicit. It also trivially handles
 concurrent requests.
 
-I won't claim this is easier or harder to write than the monadic
+I won't claim this is easier to write than a monadic
 version, but it has the properties we need at this level of the system.
 
 Userspace agents similarly are permanent entities that need to not lose
@@ -380,48 +391,83 @@ good thing, but anyone who defends functional programming should see
 some advantages to that.
 
 However, userspace sometimes needs to perform long sequences of I/O.
+Monadic and state machine pseudocode are given in Listing \ref{lst:monadic} and \ref{lst:state-machine}.
+
 Let's look at an example where we want to fetch the front page of a site
 and the first couple comments on each story. \textsc{http} is unreliable, so on
 failure we retry five times.
 
-Monadic:
-
-topStories \texttt{←} fetch(topStoriesUrl) loop(topStories)
-
+\begin{lstlisting}[style=listingblock,
+                   float=b!,
+                   label={lst:monadic},
+                   caption={Monadic I/O example of fetching top stories and comments.},]
+topStories ← fetch(topStoriesUrl)
+loop(topStories)
 where:
+loop :: topStories → IO Null
+  if topStories is Null
+    return Null
+  comments ← retryLoop(5,head(topStories))
+  otherComments ← loop(tail(topStories))
+  append(comments,otherComments)
 
-loop :: topStories -\textgreater{} I/O Null if topStories is Null return
-Null comments \texttt{←} retryLoop(5,head(topStories)) otherComments
-\texttt{←} loop(tail(topStories)) append(comments,otherComments)
+retryLoop :: [n story] → IO Comments
+  comments ← fetchComments(story)
+  if comments is HTTPError:
+    if n == 0:
+      bail
+    else:
+      retryLoop(n-1, story)
+\end{lstlisting}
 
-retryLoop :: {[}n story{]} -\textgreater{} I/O Comments comments
-\texttt{←} fetchComments(story) if comments is \textsc{http}Error: if n == 0:
-bail else: retryLoop(n-1, story)
+\begin{lstlisting}[style=listingblock,
+                   float=p!,
+                   label={lst:state-machine},
+                   caption={State machine example of fetching top stories and comments.},]
+state :: Initial
+       | FetchingTop
+       | FetchingStory comments stories retries
+       | Done comments
 
-State machine:
-
-state :: Initial | FetchingTop | FetchingStory
-comments stories retries | Done comments
-
-main(state, event) \{ switch event \{ Initialize -\textgreater{} assert
-state == Initial {[}FetchingTop, Fetch topStoriesUrl{]} HttpResponse
-response -\textgreater{} switch state \{ FetchingTop -\textgreater{}
-{[}FetchingStory Null stories 5, FetchComments head(stories){]}
-FetchingStory comments stories retries -\textgreater{} if response is
-\textsc{http}Error: if retries == 0: {[}Initial, Null{]} else: {[}FetchingStory
-comments stories retries-1, FetchComments head(stories){]} else:
-comments = append(response,comments) if tail(stories) is Null: {[}Done
-comments, Null{]} else: {[}FetchingStory append(comments,response)
-tail(stories) 5, FetchComments head(tail(stories)){]} \} \} \}
+main(state, event) {
+  switch event {
+    Initialize →
+      assert state == Initial
+      [FetchingTop, Fetch topStoriesUrl]
+    HttpResponse response →
+      switch state {
+        FetchingTop →
+          [FetchingStory Null stories 5,
+           FetchComments head(stories)]
+        FetchingStory comments stories retries →
+          if response is HTTPError:
+            if retries == 0:
+              [Initial, Null]
+            else:
+              [FetchingStory comments stories
+                             retries-1,
+               FetchComments head(stories)]
+          else:
+            comments = append(response, comments)
+            if tail(stories) is Null:
+              [Done comments, Null]
+            else:
+              [FetchingStory append(comments,response)
+                             tail(stories) 5,
+               FetchComments head(tail(stories))]
+      }
+  }
+}
+\end{lstlisting}
 
 With practice, the state machine version of this can be written
-correctly. However, (1) it's verbose, (2) the control flow jumps all
-over the place, and (3) in practice it's challenging to get exactly
+correctly. However, 1) it's verbose, 2) the control flow jumps all
+over the place, and 3) in practice it's challenging to get exactly
 right. This is still a small example, and it gets much worse as the
 length and complexity of the I/O sequence grows.
 
 The monadic version, on the other hand, flows cleanly down the page. We
-can factor out generic functionality like ``retry this request n times''
+can factor out generic functionality like ``retry this request $n$ times''
 to make the essence of the computation clear.
 
 Suppose you have to upgrade this. In the state machine, you can see
@@ -476,27 +522,44 @@ This thread has a definite purpose: given the most recent block number
 we already know about, fetch all the \textsc{pki} transactions since then. The
 function signature is:
 
-syncEthereum oldBlockNumber -\textgreater{} I/O {[}newBlockNumber,
-newTxs{]}
+\begin{lstlisting}[style=listingblock]
+syncEthereum oldBlockNumber →
+  I/O [newBlockNumber, newTxs]
+\end{lstlisting}
 
 Jael runs this thread every five minutes and, if it succeeds, then we
 update our block number and \textsc{pki} state. If the thread fails, gets stuck,
 or we need to upgrade it, we just kill the old thread and start a new
 one. Again, a few extra \textsc{http} requests don't matter.
 
-From Jael's perspective, it looks something like:
+\begin{lstlisting}[style=listingblock,
+                   float=p!,
+                   caption={Jael's state machine},
+                   label={lst:jael-state-machine}]
+state :: State block txs outstandingThread
+main(state,event) {
+  switch event {
+    Initialize → [State 0 Null Null,
+                  StartTimer (now + five minutes)]
+    TimerFired →
+      effects = If outstandingThread is Null
+                then Null
+                else [Kill outstandingThread]
+      newId = newThreadId()
+      [State txs newId,
+       append(effects,
+              StartThread newId syncEthereum(block),
+              StartTimer (now + five minutes))]
+    ThreadFinished Failure → [State block txs Null,
+                              Null]
+    ThreadFinished Success newBlockNumber newTxs →
+      [State newBlockNumber append(txs,newTxs) Null,
+       Null]
+  }
+}
+\end{lstlisting}
 
-state :: State block txs outstandingThread main(state,event) \{ switch
-event \{ Initialize -\textgreater{} {[}State 0 Null Null, StartTimer
-(now + five minutes){]} TimerFired -\textgreater{} effects = If
-outstandingThread is Null then Null else {[}Kill outstandingThread{]}
-newId = newThreadId() {[}State txs newId, append(effects, StartThread
-newId syncEthereum(block), StartTimer (now + five minutes)){]}
-ThreadFinished Failure -\textgreater{} {[}State block txs Null, Null{]}
-ThreadFinished Success newBlockNumber newTxs -\textgreater{} {[}State
-newBlockNumber append(txs,newTxs) Null, Null{]} \} \}
-
-In other words, from Jael's perspective, it's just a single I/O event
+From Jael's perspective, it looks something like Listing~\ref{lst:jael-state-machine}.  In other words, it's just a single I/O event
 that encapsulates arbitrarily complex I/O in the thread. A single I/O
 event is easy enough, and we can maintain all our permanency and
 robustness guarantees, because we know the thread will have one of three
@@ -509,25 +572,19 @@ What about upgrading? We've already said we can handle the thread dying
 for arbitrary reasons, so if an upgrade comes in, we just kill it. We
 can upgrade Jael's state machine easily since its state is very simple.
 
+\newpage
 \section{Recap}\label{recap}
 
 Let's recap what we've covered:
 
-\begin{itemize}
-\tightlist
-\item
-  There are three styles of I/O: imperative, monadic, and explicit state
-  machines.
-\item
-  Urbit supports explicit state machines (agents) and monadic I/O
+\begin{itemize}[noitemsep,topsep=2pt]
+  \item  There are three styles of I/O: imperative, monadic, and explicit state machines.
+  \item  Urbit supports explicit state machines (agents) and monadic I/O
   (threads).
-\item
-  Explicit state machines are preferred for permanent, robust,
+  \item  Explicit state machines are preferred for permanent, robust,
   concurrent code.
-\item
-  Monadic I/O is preferred for short-lived code with complex I/O.
-\item
-  If a state machine needs to perform complex I/O, it should encapsulate
+  \item  Monadic I/O is preferred for short-lived code with complex I/O.
+  \item  If a state machine needs to perform complex I/O, it should encapsulate
   it in a thread so that, from the perspective of the state machine,
   it's simple I/O.
 \end{itemize}
