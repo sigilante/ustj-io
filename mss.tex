@@ -37,6 +37,9 @@
 \thispagestyle{firststyle}
 
 \begin{abstract}
+  Urbit's input and output system is structured as explicit state
+  machines, with a small amount of monadic I/O at the top level.
+  This is a deliberate design choice, and we explore the design space.
 \end{abstract}
 
 % We will adjust page numbering in final editing.
@@ -141,7 +144,6 @@ Let's look at another type of program: a simple \textsc{http} server that you ca
 give text at the \textsc{cli}, which will respond to all \textsc{http} requests with that
 text.
 
-\newpage
 \noindent
 Imperative:
 
